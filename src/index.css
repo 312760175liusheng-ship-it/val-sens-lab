@@ -1,0 +1,87 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+  --background: #080b0f;
+  --foreground: #f4f7f8;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--background); }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+}
+
+button, input { font: inherit; }
+
+::selection { background: #ff4655; color: white; }
+
+.aim-grid {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px),
+    radial-gradient(circle at 50% 48%, rgb(101 245 198 / 0.055), transparent 34%);
+  background-size: 44px 44px, 44px 44px, 100% 100%;
+}
+
+.aim-target {
+  position: absolute;
+  z-index: 5;
+  transform: translate(-50%, -50%);
+  border: 3px solid #ff4655;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, #fff 0 7%, #ff7b86 8% 20%, #ff4655 21% 43%, rgb(255 70 85 / 0.15) 44% 100%);
+  box-shadow: 0 0 0 7px rgb(255 70 85 / 0.08), 0 0 32px rgb(255 70 85 / 0.35);
+  animation: target-in 120ms ease-out;
+}
+
+.aim-target::before,
+.aim-target::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: rgb(255 255 255 / 0.7);
+  transform: translate(-50%, -50%);
+}
+
+.aim-target::before { width: 76%; height: 1px; }
+.aim-target::after { width: 1px; height: 76%; }
+
+.virtual-reticle {
+  position: absolute;
+  z-index: 10;
+  width: 23px;
+  height: 23px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.virtual-reticle::before,
+.virtual-reticle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: #65f5c6;
+  box-shadow: 0 0 8px rgb(101 245 198 / 0.55);
+  transform: translate(-50%, -50%);
+}
+
+.virtual-reticle::before { width: 23px; height: 2px; }
+.virtual-reticle::after { width: 2px; height: 23px; }
+
+@keyframes target-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.65); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; }
+}

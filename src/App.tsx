@@ -7,6 +7,7 @@ const ROUND_SECONDS = 25;
 
 type Stage = 'setup' | 'ready' | 'round' | 'rest' | 'result';
 type Variant = 'low' | 'base' | 'high';
+type InputMode = 'locked' | 'compat';
 
 type Trial = {
   variant: Variant;
@@ -120,12 +121,15 @@ export default function Home() {
   const [target, setTarget] = useState<Target>({ x: 0, y: 0, radius: 28 });
   const [paused, setPaused] = useState(false);
   const [pointerMessage, setPointerMessage] = useState('');
+  const [inputMode, setInputMode] = useState<InputMode>('locked');
+  const [compatUsed, setCompatUsed] = useState(false);
   const [lastRun, setLastRun] = useState<LastRun | null>(null);
 
   const arenaRef = useRef<HTMLDivElement>(null);
   const statsRef = useRef<MutableStats>(emptyStats());
   const stageRef = useRef<Stage>('setup');
   const pausedRef = useRef(false);
+  const inputModeRef = useRef<InputMode>('locked');
   const cursorRef = useRef(cursor);
   const targetRef = useRef(target);
   const trialRef = useRef<Trial | undefined>(undefined);
@@ -145,11 +149,12 @@ export default function Home() {
   useEffect(() => {
     stageRef.current = stage;
     pausedRef.current = paused;
+    inputModeRef.current = inputMode;
     cursorRef.current = cursor;
     targetRef.current = target;
     trialRef.current = currentTrial;
     resultsRef.current = results;
-  }, [stage, paused, cursor, target, currentTrial, results]);
+  }, [stage, paused, inputMode, cursor, target, currentTrial, results]);
 
   useEffect(() => {
     try {
@@ -237,31 +242,29 @@ export default function Home() {
 
   useEffect(() => {
     const onPointerLockChange = () => {
-      if (stageRef.current !== 'round') return;
+      if (stageRef.current !== 'round' || inputModeRef.current !== 'locked') return;
       const locked = document.pointerLockElement === arenaRef.current;
       setPaused(!locked);
       pausedRef.current = !locked;
     };
-    const onPointerLockError = () => {
-      if (stageRef.current === 'round') {
-        setPointerMessage('浏览器没有锁定鼠标。请点击“继续测试”重试。');
-        setPaused(true);
-      }
-    };
     document.addEventListener('pointerlockchange', onPointerLockChange);
-    document.addEventListener('pointerlockerror', onPointerLockError);
     return () => {
       document.removeEventListener('pointerlockchange', onPointerLockChange);
-      document.removeEventListener('pointerlockerror', onPointerLockError);
     };
   }, []);
 
   useEffect(() => {
     const onMouseMove = (event: MouseEvent) => {
-      if (stageRef.current !== 'round' || pausedRef.current || document.pointerLockElement !== arenaRef.current) return;
+      if (stageRef.current !== 'round' || pausedRef.current) return;
       const arena = arenaRef.current;
       if (!arena) return;
-      const { width, height } = arena.getBoundingClientRect();
+      const bounds = arena.getBoundingClientRect();
+      const isLocked = inputModeRef.current === 'locked' && document.pointerLockElement === arena;
+      const isInsideArena = event.clientX >= bounds.left && event.clientX <= bounds.right
+        && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+      const isCompatible = inputModeRef.current === 'compat' && isInsideArena;
+      if (!isLocked && !isCompatible) return;
+      const { width, height } = bounds;
       const multiplier = trialRef.current?.multiplier ?? 1;
       const next = {
         x: clamp(cursorRef.current.x + event.movementX * multiplier, 0, width),
@@ -274,7 +277,13 @@ export default function Home() {
     };
 
     const onMouseDown = (event: MouseEvent) => {
-      if (event.button !== 0 || stageRef.current !== 'round' || pausedRef.current || document.pointerLockElement !== arenaRef.current) return;
+      const arena = arenaRef.current;
+      if (event.button !== 0 || stageRef.current !== 'round' || pausedRef.current || !arena) return;
+      const bounds = arena.getBoundingClientRect();
+      const isLocked = inputModeRef.current === 'locked' && document.pointerLockElement === arena;
+      const isInsideArena = event.clientX >= bounds.left && event.clientX <= bounds.right
+        && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+      if (!isLocked && !(inputModeRef.current === 'compat' && isInsideArena)) return;
       const currentTarget = targetRef.current;
       const distance = Math.hypot(cursorRef.current.x - currentTarget.x, cursorRef.current.y - currentTarget.y);
       const updated: MutableStats = {
@@ -311,21 +320,57 @@ export default function Home() {
     };
   }, [spawnTarget]);
 
+  const attemptPointerLock = (arena: HTMLDivElement, options?: { unadjustedMovement?: boolean }) => new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (locked: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      document.removeEventListener('pointerlockchange', onChange);
+      document.removeEventListener('pointerlockerror', onError);
+      resolve(locked);
+    };
+    const onChange = () => finish(document.pointerLockElement === arena);
+    const onError = () => finish(false);
+    const timeout = window.setTimeout(() => finish(document.pointerLockElement === arena), 700);
+    document.addEventListener('pointerlockchange', onChange);
+    document.addEventListener('pointerlockerror', onError);
+
+    try {
+      const request = arena.requestPointerLock.bind(arena) as (lockOptions?: { unadjustedMovement?: boolean }) => Promise<void> | void;
+      const result = request(options);
+      if (result && typeof result.catch === 'function') result.catch(() => finish(false));
+    } catch {
+      finish(false);
+    }
+  });
+
+  const enableCompatibilityMode = () => {
+    inputModeRef.current = 'compat';
+    setInputMode('compat');
+    setCompatUsed(true);
+    setPointerMessage('已切换兼容模式：无需锁定鼠标，但结果更容易受系统鼠标加速和窗口边缘影响。');
+    pausedRef.current = false;
+    setPaused(false);
+    if (document.pointerLockElement) document.exitPointerLock();
+  };
+
   const requestLock = async () => {
     const arena = arenaRef.current;
     if (!arena) return;
-    const request = arena.requestPointerLock.bind(arena) as (options?: { unadjustedMovement?: boolean }) => Promise<void> | void;
-    try {
-      await request({ unadjustedMovement: true });
+    inputModeRef.current = 'locked';
+    setInputMode('locked');
+    pausedRef.current = true;
+    setPaused(true);
+
+    const rawLocked = await attemptPointerLock(arena, { unadjustedMovement: true });
+    const locked = rawLocked || await attemptPointerLock(arena);
+    if (locked) {
       setPointerMessage('');
-    } catch {
-      try {
-        await request();
-        setPointerMessage('当前浏览器不支持原始鼠标输入，结果会受系统鼠标加速影响。');
-      } catch {
-        setPointerMessage('无法锁定鼠标。建议用桌面版 Chrome 或 Edge 打开。');
-        setPaused(true);
-      }
+      pausedRef.current = false;
+      setPaused(false);
+    } else {
+      enableCompatibilityMode();
     }
   };
 
@@ -340,7 +385,7 @@ export default function Home() {
     cursorRef.current = center;
     setCursor(center);
     finishingRef.current = false;
-    setPaused(false);
+    setPaused(true);
     setStage('round');
     stageRef.current = 'round';
     await requestLock();
@@ -356,6 +401,9 @@ export default function Home() {
     setRoundIndex(0);
     setResults([]);
     resultsRef.current = [];
+    setInputMode('locked');
+    inputModeRef.current = 'locked';
+    setCompatUsed(false);
     setStage('ready');
   };
 
@@ -369,6 +417,9 @@ export default function Home() {
     setStage('setup');
     setResults([]);
     setTrials([]);
+    setInputMode('locked');
+    inputModeRef.current = 'locked';
+    setCompatUsed(false);
   };
 
   if (stage === 'setup') {
@@ -457,6 +508,7 @@ export default function Home() {
               <p className="text-xs font-bold tracking-[0.24em] text-[#65f5c6]">03 / 测试结论</p>
               <h1 className="mt-3 text-4xl font-black sm:text-5xl">建议灵敏度 <span className="text-[#ff4655]">{formatSens(verdict.recommended)}</span></h1>
               <p className="mt-4 text-sm text-white/50">{verdict.direction} · {verdict.confidence}</p>
+              {compatUsed && <p className="mt-3 text-xs leading-6 text-amber-200/60">本次使用了兼容模式，结论置信度自动降低一级；建议在 Chrome 或 Edge 中再复测一次。</p>}
             </div>
             <div className="grid grid-cols-2 gap-3 font-mono text-sm">
               <Metric label="建议 eDPI" value={Math.round(dpi * verdict.recommended)} />
@@ -533,32 +585,38 @@ export default function Home() {
 
       <div
         aria-label="灵敏度点击测试区域"
-        className="aim-grid relative mx-auto h-[calc(100vh-76px)] min-h-[520px] max-w-[1500px] overflow-hidden rounded-3xl border border-white/10 bg-[#0d1218]"
+        className={`aim-grid relative mx-auto h-[calc(100vh-76px)] min-h-[520px] max-w-[1500px] overflow-hidden rounded-3xl border border-white/10 bg-[#0d1218] ${stage === 'round' ? 'cursor-none' : ''}`}
         ref={arenaRef}
       >
         <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-center gap-5 border-b border-white/8 bg-[#0a0e13]/85 px-4 py-3 font-mono text-xs backdrop-blur">
           <span><em className="not-italic text-white/30">命中</em> {hud.hits}/{TARGETS_PER_ROUND}</span>
           <span><em className="not-italic text-white/30">失误</em> {hud.misses}</span>
           <span><em className="not-italic text-white/30">剩余</em> {timeLeft}s</span>
+          {inputMode === 'compat' && <span className="rounded-full bg-amber-300/10 px-2 py-1 text-[9px] text-amber-200/70">兼容模式</span>}
         </div>
 
         {stage === 'round' && !paused && (
           <>
             <div className="aim-target" style={{ left: target.x, top: target.y, width: target.radius * 2, height: target.radius * 2 }} />
             <div className="virtual-reticle" style={{ left: cursor.x, top: cursor.y }} />
-            <p className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 text-[10px] tracking-[0.16em] text-white/20">ESC 暂停 · 左键命中红色目标</p>
+            <p className="pointer-events-none absolute bottom-4 left-1/2 w-full -translate-x-1/2 text-center text-[10px] tracking-[0.12em] text-white/25">
+              {inputMode === 'compat' ? '兼容模式 · 鼠标保持在黑色测试区内 · 左键命中目标' : 'ESC 暂停 · 左键命中红色目标'}
+            </p>
           </>
         )}
 
         {stage === 'ready' && (
-          <ArenaOverlay eyebrow={`方案 ${String.fromCharCode(65 + roundIndex)} · 不显示倍率`} title={roundIndex === 0 ? '先做一轮熟悉手感' : '保持同样坐姿，继续下一轮'} body="点击后鼠标会被锁定在测试区。移动绿色准星，左键击中 15 个红色目标；打空会记录为失误。">
+          <ArenaOverlay eyebrow={`方案 ${String.fromCharCode(65 + roundIndex)} · 不显示倍率`} title={roundIndex === 0 ? '先做一轮熟悉手感' : '保持同样坐姿，继续下一轮'} body="点击后会优先锁定鼠标；若当前浏览器不支持，将自动进入可点击的兼容模式。移动绿色准星，左键击中 15 个红色目标。">
             <button className="rounded-2xl bg-[#ff4655] px-7 py-4 text-sm font-black tracking-[0.1em]" onClick={beginRound} type="button">锁定鼠标并开始</button>
           </ArenaOverlay>
         )}
 
         {stage === 'round' && paused && (
           <ArenaOverlay eyebrow="测试已暂停" title="鼠标锁定已解除" body={pointerMessage || '测试计时已经暂停。点击继续后会重新锁定鼠标，当前成绩不会丢失。'}>
-            <button className="rounded-2xl bg-[#ff4655] px-7 py-4 text-sm font-black" onClick={requestLock} type="button">继续测试</button>
+            <div className="flex flex-col justify-center gap-3 sm:flex-row">
+              <button className="rounded-2xl bg-[#ff4655] px-7 py-4 text-sm font-black" onClick={requestLock} type="button">重新锁定并继续</button>
+              <button className="rounded-2xl border border-white/15 px-7 py-4 text-sm text-white/70" onClick={enableCompatibilityMode} type="button">兼容模式继续</button>
+            </div>
           </ArenaOverlay>
         )}
 
